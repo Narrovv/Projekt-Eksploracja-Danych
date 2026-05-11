@@ -18,7 +18,7 @@ SPOTIFY_REDIRECT_URI = ''
 # ==========================================
 # 2. DOWNLOADING DATA
 # ==========================================
-def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000):
+def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000, target_playlists=None):
     print("Connecting to Spotify API...")
     sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
         client_id=SPOTIFY_CLIENT_ID,
@@ -27,17 +27,23 @@ def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000):
         scope="playlist-read-private playlist-read-collaborative" 
     ))
 
-    # 1. Downloading playlists
     print("Downloading your playlists...")
     playlists = sp.current_user_playlists()
-    
     playlist_tracks = []
     
-# 2. DOWNLOADING SONGS FROM PLAYLISTS
     for playlist in playlists['items']:
         if not playlist or not playlist.get('id'):
             continue
             
+        playlist_name = playlist.get('name', 'Nieznana')
+        
+        # FILTERING BY TARGET PLAYLISTS (if specified)
+        if target_playlists and playlist_name not in target_playlists:
+            continue
+
+
+        print(f"\n -> Downloading from: {playlist_name}")
+        
         try:
             results = sp.playlist_tracks(playlist['id'])
             tracks = results['items']
@@ -46,14 +52,13 @@ def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000):
                 results = sp.next(results)
                 tracks.extend(results['items'])
                 
-            print(f" -> Downloading from: {playlist.get('name')} (Detected items: {len(tracks)})")
-            
             added_from_this_playlist = 0
             for item in tracks:
                 if not isinstance(item, dict):
                     continue
                     
                 track = item.get('track') or item.get('item')
+                
                 if track is None or not isinstance(track, dict):
                     continue
                     
@@ -70,20 +75,25 @@ def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000):
                         })
                         added_from_this_playlist += 1
                         
-            print(f"    (Found: {added_from_this_playlist} valid tracks)")
+            print(f"    (Extracted: {added_from_this_playlist} valid tracks)")
             
         except spotipy.exceptions.SpotifyException:
-            print(f"    [!] Skipped '{playlist.get('name')}' (no access).")
+            print(f"    [!] Omited '{playlist_name}' (no access / Spotify playlist).")
             continue
             
         if len(playlist_tracks) >= max_tracks_to_fetch:
-            print("Reached the limit of tracks to fetch.")
+            print("\nReached global limit of tracks to fetch.")
             break
 
     # 3. REMOVING DUPLICATES
     liked_df = pd.DataFrame(playlist_tracks, columns=['match_name', 'match_artist', 'Liked'])
+    
+    if liked_df.empty:
+        print("\n[!] ERROR: No tracks downloaded. Check the playlist name!")
+        return liked_df
+        
     liked_df = liked_df.drop_duplicates(subset=['match_name', 'match_artist'])
-    print(f"\nPobrano {len(liked_df)} unikalnych utworów ze wszystkich Twoich playlist.")
+    print(f"\nDownloaded {len(liked_df)} unique tracks from all your playlists.")
 
     # 4. PREPARING KAGGLE DATA FOR MATCHING
     kaggle_df['match_name'] = kaggle_df['track_name'].astype(str).str.lower().str.strip()
@@ -116,8 +126,7 @@ def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000):
 # ==========================================
 print("Downloading local Kaggle dataset...")
 kaggle_df = pd.read_csv('data/dataset.csv') 
-
-df = get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000)
+df = get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000, target_playlists=[])
 
 if len(df) > 20:
     print("\nInżynieria cech...")
@@ -149,7 +158,7 @@ if len(df) > 20:
     rf_acc = accuracy_score(y_test, rf_pred)
     rf_roc = roc_auc_score(y_test, rf_proba)
 
-    # --- WALIDACJA KRZYŻOWA ---
+    # --- CROSS-VALIDATION ---
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('logreg', LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42))
@@ -160,46 +169,41 @@ if len(df) > 20:
     print(f"Dataset: {len(X)} tracks (50/50 zeros and ones). Used {X.shape[1]} audio features.")
     print(f"1. RANDOM FOREST (Test Set) -> Accuracy: {rf_acc:.2f} | ROC AUC: {rf_roc:.2f}")
     print(f"2. LOGISTIC REGRESSION (Cross-Validation) -> Average ROC AUC: {cv_roc_scores.mean():.2f}")
+
+    # ==========================================
+    # 5. RECOMMENDATION FUNCTION 
+    # ==========================================
+    def recommend_songs(model, all_songs_df, user_history_df, top_n=10):
+        print("\nGenerowanie spersonalizowanych rekomendacji...")
+        
+        known_tracks = user_history_df[user_history_df['Liked'] == 1]['match_name'].tolist()
+        candidates = all_songs_df[~all_songs_df['match_name'].isin(known_tracks)].copy()
+
+        num_features = ['duration_ms', 'danceability', 'energy', 'loudness', 
+                        'speechiness', 'acousticness', 'instrumentalness', 
+                        'liveness', 'valence', 'tempo']
+        
+        for col in num_features:
+            candidates[col] = candidates[col].fillna(candidates[col].median())
+            
+        candidates['explicit'] = candidates['explicit'].apply(lambda x: 1 if x is True else 0)
+
+        X_candidates = candidates[num_features + ['explicit']]
+        X_candidates.columns = X_candidates.columns.astype(str)
+
+        probabilities = model.predict_proba(X_candidates)[:, 1]
+        candidates['Match_Probability'] = probabilities
+
+        recommendations = candidates.sort_values(by='Match_Probability', ascending=False)
+        recommendations = recommendations.drop_duplicates(subset=['track_name', 'artists'])
+
+        return recommendations[['track_name', 'artists', 'Match_Probability']].head(top_n)
+
+    # --- Running Recommendation Function ---
+    top_10 = recommend_songs(rf_model, kaggle_df, df, top_n=10)
+
+    print("\nYour Top 10 Recommendations:")
+    print(top_10.to_string(index=False))
+
 else:
     print("\nNot enough data from API to train the ML model.")
-
-# ==========================================
-# 5. RECOMMENDATION FUNCTION (PLACEHOLDER)
-# ==========================================
-def recommend_songs(model, all_songs_df, user_history_df, top_n=10):
-    print("\nGenerowanie spersonalizowanych rekomendacji...")
-    
-    # 1. Remove known tracks from the candidate pool
-    known_tracks = user_history_df[user_history_df['Liked'] == 1]['match_name'].tolist()
-    candidates = all_songs_df[~all_songs_df['match_name'].isin(known_tracks)].copy()
-
-    # 2. Prepare features for prediction (same as during training)
-    num_features = ['duration_ms', 'danceability', 'energy', 'loudness', 
-                    'speechiness', 'acousticness', 'instrumentalness', 
-                    'liveness', 'valence', 'tempo']
-    
-    for col in num_features:
-        candidates[col] = candidates[col].fillna(candidates[col].median())
-        
-    candidates['explicit'] = candidates['explicit'].apply(lambda x: 1 if x is True else 0)
-
-    X_candidates = candidates[num_features + ['explicit']]
-    X_candidates.columns = X_candidates.columns.astype(str)
-
-    # 3. predict probabilities of being liked (1) using the trained model
-    probabilities = model.predict_proba(X_candidates)[:, 1]
-    candidates['Match_Probability'] = probabilities
-
-    # 4. sorting candidates by predicted probability
-    recommendations = candidates.sort_values(by='Match_Probability', ascending=False)
-    
-    # 5. removing duplicates (if any)
-    recommendations = recommendations.drop_duplicates(subset=['track_name', 'artists'])
-
-    return recommendations[['track_name', 'artists', 'Match_Probability']].head(top_n)
-
-# --- Running Recommendation Function ---
-top_10 = recommend_songs(rf_model, kaggle_df, df, top_n=10)
-
-print("\nTWOJE TOP 10 REKOMENDACJI:")
-print(top_10.to_string(index=False))
