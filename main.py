@@ -85,7 +85,7 @@ def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000, target_playlists=
             print("\nReached global limit of tracks to fetch.")
             break
 
-    # 3. REMOVING DUPLICATES
+    # REMOVING DUPLICATES
     liked_df = pd.DataFrame(playlist_tracks, columns=['match_name', 'match_artist', 'Liked'])
     
     if liked_df.empty:
@@ -95,11 +95,11 @@ def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000, target_playlists=
     liked_df = liked_df.drop_duplicates(subset=['match_name', 'match_artist'])
     print(f"\nDownloaded {len(liked_df)} unique tracks from all your playlists.")
 
-    # 4. PREPARING KAGGLE DATA FOR MATCHING
+    # PREPARING KAGGLE DATA FOR MATCHING
     kaggle_df['match_name'] = kaggle_df['track_name'].astype(str).str.lower().str.strip()
     kaggle_df['match_artist'] = kaggle_df['artists'].astype(str).str.split(';').str[0].str.lower().str.strip()
 
-    # 5. JOINING USER LIKES WITH KAGGLE DATABASE
+    # JOINING USER LIKES WITH KAGGLE DATABASE
     matched_likes = pd.merge(liked_df, kaggle_df, on=['match_name', 'match_artist'], how='inner')
     matched_likes = matched_likes.drop_duplicates(subset=['match_name', 'match_artist'])
     
@@ -110,7 +110,7 @@ def get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000, target_playlists=
         print("Warning: You have too few matched songs to train the classification models.")
         return matched_likes
 
-    # 6. GENERATING BACKGROUND (NEGATIVE EXAMPLES)
+    #GENERATING BACKGROUND (NEGATIVE EXAMPLES)
     print("Generating background (negative examples)...")
     unliked_pool = kaggle_df[~kaggle_df['track_id'].isin(matched_likes['track_id'])]
     negatives_df = unliked_pool.sample(n=n_matched, random_state=42).copy()
@@ -129,7 +129,6 @@ kaggle_df = pd.read_csv('data/dataset.csv')
 df = get_user_spotify_data(kaggle_df, max_tracks_to_fetch=2000, target_playlists=[])
 
 if len(df) > 20:
-    print("\nInżynieria cech...")
     num_features = ['duration_ms', 'danceability', 'energy', 'loudness', 
                     'speechiness', 'acousticness', 'instrumentalness', 
                     'liveness', 'valence', 'tempo']
@@ -143,14 +142,14 @@ if len(df) > 20:
     y = df['Liked']
     X.columns = X.columns.astype(str)
 
-    print("\nTrenowanie modeli...")
+    print("\nTraining models...")
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    # --- MODEL 1 (RANDOM FOREST) ---
+    #MODEL 1 (RANDOM FOREST)
     rf_model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5, class_weight='balanced')
     rf_model.fit(X_train, y_train)
     rf_pred = rf_model.predict(X_test)
@@ -158,7 +157,7 @@ if len(df) > 20:
     rf_acc = accuracy_score(y_test, rf_pred)
     rf_roc = roc_auc_score(y_test, rf_proba)
 
-    # --- CROSS-VALIDATION ---
+    #CROSS-VALIDATION
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('logreg', LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42))
@@ -171,10 +170,10 @@ if len(df) > 20:
     print(f"2. LOGISTIC REGRESSION (Cross-Validation) -> Average ROC AUC: {cv_roc_scores.mean():.2f}")
 
     # ==========================================
-    # 5. RECOMMENDATION FUNCTION 
+    # 4. RECOMMENDATION FUNCTION 
     # ==========================================
     def recommend_songs(model, all_songs_df, user_history_df, top_n=10):
-        print("\nGenerowanie spersonalizowanych rekomendacji...")
+        print("\nGenerating personalized recommendations...")
         
         known_tracks = user_history_df[user_history_df['Liked'] == 1]['match_name'].tolist()
         candidates = all_songs_df[~all_songs_df['match_name'].isin(known_tracks)].copy()
@@ -199,7 +198,7 @@ if len(df) > 20:
 
         return recommendations[['track_name', 'artists', 'Match_Probability']].head(top_n)
 
-    # --- Running Recommendation Function ---
+    #Running Recommendation Function
     top_10 = recommend_songs(rf_model, kaggle_df, df, top_n=10)
 
     print("\nYour Top 10 Recommendations:")
